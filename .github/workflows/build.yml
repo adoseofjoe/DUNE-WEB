@@ -8,6 +8,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout (with LFS)
         uses: actions/checkout@v4
@@ -31,6 +34,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: 8.10.2
+
       - name: Create wrapper (only runs if missing)
         if: ${{ !hashFiles('gradle/wrapper/gradle-wrapper.jar') }}
         run: gradle -q wrapper
@@ -60,16 +64,35 @@ jobs:
 
       - name: Self-sign Release (temp key)
         run: |
+          set -e
+          # Find latest build-tools directory (e.g., 35.0.0)
+          BUILD_TOOLS_DIR="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
+          echo "Using build-tools at: $BUILD_TOOLS_DIR"
+
+          # Generate a temporary keystore
           keytool -genkeypair -v -keystore my-temp.keystore -alias temp \
             -storepass password -keypass password \
-            -dname "CN=DuneWeb,O=Dune,L=City,S=State,C=US" \
+            -dname "CN=DuneWeb,O=Dune,L=City,ST=State,C=US" \
             -keyalg RSA -keysize 2048 -validity 10000
-          apksigner sign --ks my-temp.keystore --ks-pass pass:password --key-pass pass:password \
-            --out app-release-selfsigned.apk app/build/outputs/apk/release/app-release-unsigned.apk
-          zipalign -v -p 4 app-release-selfsigned.apk app-release-selfsigned-aligned.apk || \
-            cp app-release-selfsigned.apk app-release-selfsigned-aligned.apk
+
+          # Paths
+          APK_UNSIGNED="app/build/outputs/apk/release/app-release-unsigned.apk"
+          APK_SIGNED="app-release-selfsigned.apk"
+          APK_ALIGNED="app-release-selfsigned-aligned.apk"
+
+          # Sign with apksigner from build-tools
+          "$BUILD_TOOLS_DIR/apksigner" sign \
+            --ks my-temp.keystore \
+            --ks-pass pass:password \
+            --key-pass pass:password \
+            --out "$APK_SIGNED" \
+            "$APK_UNSIGNED"
+
+          # Align with zipalign from build-tools (no-op fallback if it fails)
+          "$BUILD_TOOLS_DIR/zipalign" -v -p 4 "$APK_SIGNED" "$APK_ALIGNED" || cp "$APK_SIGNED" "$APK_ALIGNED"
 
       - name: Upload Artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: DUNE-WEB-artifacts
